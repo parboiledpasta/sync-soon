@@ -1,0 +1,141 @@
+# SemaBridge Manual SQL Override File — Example
+# Metric: OptOut_Rank_Measure
+# Safety Tier: 4
+# Hazard: specialized_builtin_logic (EARLIER + RANKX)
+# Generated: 2026-02-14T00:00:00
+# Status: approved
+---
+version: "1.0"
+status: approved
+author: data-engineering-team
+
+metric_name: OptOut_Rank_Measure
+original_dax: |
+  IF(
+    vUE[date_received] <= DATE(2024, 04, 02),
+    RANKX(
+      FILTER(
+        vUE,
+        vUE[User_ID] = EARLIER(vUE[User_ID]) &&
+        vUE[date_received] <= DATE(2024, 04, 02) &&
+        vUE[Type_ID] = EARLIER(vUE[Type_ID])
+      ),
+      vUE[date_received],
+      ,
+      ASC
+    )
+  )
+safety_tier: 4
+hazard_category: specialized_builtin_logic
+hazard_description: |
+  Uses EARLIER() for nested row context and RANKX() for dynamic ranking.
+  SQL has no lexical equivalent for EARLIER. Must be rebuilt using RANK()
+  window function with explicit PARTITION BY and ORDER BY.
+
+source_model: MarketingAnalytics
+source_dataset: vUE
+
+# Layer 1: Dynamic Table — pre-computes the ranking via window function
+layer_1_dynamic_table:
+  table_name: optout_event_sequence_dt
+  target_lag: "1 hour"
+  warehouse: ANALYTICS_COMPUTE_WH
+  source_table: raw_marketing_events_vue
+  select_columns:
+    - user_id
+    - type_id
+    - date_received
+    - event_value
+  window_functions:
+    - function: RANK
+      partition_by:
+        - user_id
+        - type_id
+      order_by:
+        - date_received
+      order_direction: ASC
+      alias: optout_chronological_rank
+      filter_condition: "date_received <= '2024-04-02'::DATE"
+  filter_conditions: []
+  description: >
+    Converts the nested loop requirements of EARLIER() into a set-based
+    analytical partition using RANK() OVER (PARTITION BY user_id, type_id
+    ORDER BY date_received ASC). The CASE WHEN filter replicates the
+    DATE(2024, 04, 02) cutoff from the original DAX.
+
+# Layer 2: Semantic View — projects the metric for BI/AI consumption
+layer_2_semantic_view:
+  view_name: marketing_optout_analytics_sv
+  source_table: optout_event_sequence_dt
+  table_alias: events
+  dimensions:
+    - name: user_identifier
+      source_column: events.user_id
+      description: Unique marketing user identifier
+    - name: event_category
+      source_column: events.type_id
+      description: The numerical categorization ID of the user interaction
+    - name: event_date
+      source_column: events.date_received
+      description: Date the interaction event was received
+  facts:
+    - name: event_value
+      source_column: events.event_value
+      description: Numeric value of the interaction event
+  metrics:
+    - name: total_interaction_events
+      expression: "COUNT(events.event_value)"
+      description: Total number of interaction events
+      is_override: false
+    - name: primary_user_optouts
+      expression: >
+        COUNT(CASE 
+          WHEN events.optout_chronological_rank = 1
+           AND events.event_value = 0
+          THEN events.user_id
+          ELSE NULL
+        END)
+      description: >
+        Count of unique users who recorded their first chronological
+        opt-out event on or prior to the target cutoff date.
+      is_override: true
+  description: >
+    Semantic View for marketing opt-out analytics. Projects the
+    materialized RANKX/EARLIER logic into governed BI metrics.
+
+# Layer 3: Cortex Analyst metadata for NLP queries
+layer_3_cortex_metadata:
+  table_name: events
+  dimension_synonyms:
+    - column_name: event_category
+      synonyms:
+        - communication type
+        - contact channel
+        - interaction type
+      description: The numerical categorization ID of the user interaction
+      sample_values: ["1", "2", "3", "4"]
+    - column_name: user_identifier
+      synonyms:
+        - user id
+        - customer id
+        - subscriber id
+      description: Unique identifier for marketing users
+  metric_synonyms:
+    - column_name: primary_user_optouts
+      synonyms:
+        - first time unsubscribes
+        - initial opt outs
+        - unique initial churns
+      description: >
+        Count of unique users who recorded their first chronological
+        opt-out event on or prior to the target cutoff date.
+    - column_name: total_interaction_events
+      synonyms:
+        - total events
+        - interaction count
+      description: Total number of recorded user interaction events
+
+# Deployment targets
+snowflake_database: ANALYTICS_DB
+snowflake_schema: SEMANTIC
+snowflake_warehouse: ANALYTICS_COMPUTE_WH

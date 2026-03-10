@@ -1,0 +1,23 @@
+================================================================================
+CRITICAL CHECK: SalesFact metrics with sql_expression containing SCORE
+================================================================================
+  PASS: No SalesFact metrics reference SCORE in sql_expression
+
+================================================================================
+Sentiment metric on SalesFact details:
+================================================================================
+  unique_name: Sentiment
+  dataset: SalesFact
+  expression (DAX): AVERAGE(Sentiment[Score])
+  sql_expression: None
+  sync_enabled: False
+  sync_failure_reason: DAX translation failed (Tier 4)
+  complexity_tier: 2
+
+================================================================================
+All SalesFact metrics with sql_expression:
+================================================================================
+  Total Units | sql_expr=SUM(SALESFACT."UNITS")
+  Sales $ | sql_expr=SUM(SALESFACT."REVENUE")
+  Sum of Units | sql_expr=SUM(SALESFACT."UNITS")
+  Sum of Revenue | sql_expr=SUM(SALESFACT."REVENUE")

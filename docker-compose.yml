@@ -1,0 +1,107 @@
+# =============================================================================
+# Semabridge Phase 1 — Local Development Stack
+# =============================================================================
+# Starts Temporal dev server, a small Ray cluster, and optional PostgreSQL.
+#
+# Usage:
+#   docker compose up -d              # start all services
+#   docker compose up temporal ray-head  # minimal (no Postgres)
+#   docker compose down -v             # tear down + remove volumes
+#
+# The Semabridge worker itself runs on the host (not in Docker) so it can
+# use the local Python environment and access project files directly.
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Temporal Dev Server (all-in-one: frontend, history, matching, worker)
+  # ---------------------------------------------------------------------------
+  temporal:
+    image: temporalio/temporal:latest
+    command: ["server", "start-dev", "--ip", "0.0.0.0"]
+    ports:
+      - "7233:7233"
+      - "8233:8233"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "7233"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ---------------------------------------------------------------------------
+  # Temporal Web UI (Built-in to dev image, but keeping a placeholder if needed)
+  # ---------------------------------------------------------------------------
+  # temporal-ui:
+  #   image: temporalio/ui:2.31.2
+  #   ... (disabled as dev image has it)
+
+  # ---------------------------------------------------------------------------
+  # Ray Head Node
+  # ---------------------------------------------------------------------------
+  ray-head:
+    image: rayproject/ray:2.40.0-py310
+    ports:
+      - "6379:6379"   # Ray client
+      - "8265:8265"   # Ray Dashboard
+    command: >
+      ray start --head --port=6379
+      --dashboard-host=0.0.0.0
+      --num-cpus=4
+      --block
+    healthcheck:
+      test: ["CMD", "ray", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Ray Worker Node (scales with --scale ray-worker=N)
+  # ---------------------------------------------------------------------------
+  ray-worker:
+    image: rayproject/ray:2.40.0-py310
+    command: >
+      ray start --address=ray-head:6379
+      --num-cpus=2
+      --block
+    depends_on:
+      ray-head:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL (optional — for distributed ORM backend)
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: semabridge
+      POSTGRES_PASSWORD: semabridge_dev
+      POSTGRES_DB: semabridge
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    # profiles:
+    #   - postgres   # only started with: docker compose --profile postgres up
+
+  # ---------------------------------------------------------------------------
+  # Semabridge Temporal Worker
+  # ---------------------------------------------------------------------------
+  semabridge-worker:
+    build: .
+    depends_on:
+      temporal:
+        condition: service_started
+      ray-head:
+        condition: service_healthy
+    environment:
+      TEMPORAL_HOST: "temporal:7233"
+      RAY_ADDRESS: "ray://ray-head:6379"
+      SEMABRIDGE_ORCHESTRATOR: "temporal"
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./.env:/app/.env
+      - ./config:/app/config
+
+volumes:
+  temporal-data:
+  pg-data:
